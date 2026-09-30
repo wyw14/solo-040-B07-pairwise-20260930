@@ -17,12 +17,22 @@ func openGateHandler(runtime *Runtime) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, errors.New("invalid gate direction"))
 			return
 		}
-		command, err := runtime.Interlocks.RequestOpen(r.Context(), mustCurrent(runtime, chamberID), direction, "http:"+requestID(r.Context()))
+		command, replayed, err := runtime.Interlocks.RequestOpen(
+			r.Context(), mustCurrent(runtime, chamberID), direction,
+			operatorID(r), idempotencyKey(r),
+		)
 		if err != nil {
 			writeError(w, http.StatusConflict, err)
 			return
 		}
-		writeJSON(w, http.StatusAccepted, command)
+		// A replay is the original request completing again: report 200 rather
+		// than pretending a second command was accepted.
+		status := http.StatusAccepted
+		if replayed {
+			status = http.StatusOK
+			w.Header().Set("Idempotent-Replay", "true")
+		}
+		writeJSON(w, status, command)
 	}
 }
 

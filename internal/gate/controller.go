@@ -24,9 +24,9 @@ func NewController(state *State, commands *Commands, recorder *journal.Recorder,
 	return &Controller{state: state, commands: commands, recorder: recorder, now: now}
 }
 
-func (c *Controller) Request(ctx context.Context, cycle model.TransitCycle, direction model.Direction, open bool) (model.DeviceCommand, error) {
+func (c *Controller) Request(ctx context.Context, cycle model.TransitCycle, direction model.Direction, open bool, requestKey string) (model.DeviceCommand, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return model.DeviceCommand{}, err
+		return model.DeviceCommand{}, false, err
 	}
 	device := model.DeviceUpstreamGate
 	if direction == model.DirectionDownstream {
@@ -38,15 +38,19 @@ func (c *Controller) Request(ctx context.Context, cycle model.TransitCycle, dire
 		action = "open"
 		position = model.GateOpening
 	}
-	command, err := c.commands.Issue(cycle, device, action, 0, c.now())
+	command, replayed, err := c.commands.Issue(cycle, device, action, 0, requestKey, c.now())
 	if err != nil {
-		return model.DeviceCommand{}, err
+		return model.DeviceCommand{}, false, err
 	}
-	if err := c.state.Observe(cycle.ChamberID, direction, position, c.now()); err != nil {
-		return model.DeviceCommand{}, err
+	if !replayed {
+		if err := c.state.Observe(cycle.ChamberID, direction, position, c.now()); err != nil {
+			return model.DeviceCommand{}, false, err
+		}
+		if _, err = c.recorder.Record(ctx, cycle.ChamberID, model.EventCommandQueued, cycle.ID, cycle.Generation, command); err != nil {
+			return model.DeviceCommand{}, false, err
+		}
 	}
-	_, err = c.recorder.Record(ctx, cycle.ChamberID, model.EventCommandQueued, cycle.ID, cycle.Generation, command)
-	return command, err
+	return command, replayed, nil
 }
 
 func (c *Controller) Confirm(ctx context.Context, ack model.DeviceAck) (model.DeviceCommand, error) {

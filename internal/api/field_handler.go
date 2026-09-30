@@ -2,7 +2,9 @@ package api
 
 import (
 	"errors"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -61,19 +63,37 @@ func validPosition(position model.GatePosition) bool {
 		position == model.GateClosed || position == model.GateClosing
 }
 
+type releaseReservationInput struct {
+	Owner string `json:"owner"`
+}
+
+// releaseReservationHandler releases the caller's own reservation. Ownership
+// is taken from the authenticated operator (X-Operator-ID) or an explicit body
+// field, and the coordinator verifies it against the stored reservation inside
+// one atomic check-and-delete — there is no read-then-release race and operator
+// B can never release operator A's command.
 func releaseReservationHandler(runtime *Runtime) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chamberID := chi.URLParam(r, "chamberID")
-		reservation, ok := runtime.Interlocks.Reservation(chamberID)
-		if !ok {
-			writeError(w, http.StatusNotFound, errors.New("active reservation not found"))
+		owner := strings.TrimSpace(r.Header.Get("X-Operator-ID"))
+		if owner == "" {
+			var input releaseReservationInput
+			if err := decodeJSON(r, &input); err != nil && !errors.Is(err, io.EOF) {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			owner = strings.TrimSpace(input.Owner)
+		}
+		if owner == "" {
+			writeError(w, http.StatusBadRequest, errors.New("owner (X-Operator-ID or owner field) is required"))
 			return
 		}
-		if err := runtime.Interlocks.Release(chamberID, reservation.Owner); err != nil {
+		reservation, command, err := runtime.Interlocks.Release(r.Context(), chamberID, owner, runtime.Now())
+		if err != nil {
 			writeError(w, http.StatusConflict, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, reservation)
+		writeJSON(w, http.StatusOK, map[string]any{"reservation": reservation, "command": command})
 	}
 }
 

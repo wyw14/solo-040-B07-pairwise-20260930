@@ -37,31 +37,51 @@ func (c *Coordinator) Snapshot(chamberID string) EquipmentSnapshot {
 	}
 }
 
-func (c *Coordinator) RequestOpen(ctx context.Context, cycle model.TransitCycle, direction model.Direction, owner string) (model.DeviceCommand, error) {
-	if err := c.policy.ValidateOpen(c.Snapshot(cycle.ChamberID), direction); err != nil {
-		return model.DeviceCommand{}, err
-	}
-	var command model.DeviceCommand
-	_, err := c.arbiter.Reserve(cycle.ChamberID, direction, owner, func() error {
-		issued, issueErr := c.gates.Request(ctx, cycle, direction, true)
-		command = issued
-		return issueErr
+// RequestOpen reserves the direction and generates the gate command as one
+// atomic flow. A repeat call from the same owner while its reservation is
+// current is a legitimate retry and short-circuits to the original command
+// with replayed=true — safety validation and command generation only run on
+// the first application, so a changed snapshot can never hide the in-flight
+// request from a retrying operator.
+func (c *Coordinator) RequestOpen(ctx context.Context, cycle model.TransitCycle, direction model.Direction, owner, requestKey string) (command model.DeviceCommand, replayed bool, err error) {
+	reservation, replayed, err := c.arbiter.Reserve(cycle.ChamberID, direction, owner, func() (model.DeviceCommand, error) {
+		if err := c.policy.ValidateOpen(c.Snapshot(cycle.ChamberID), direction); err != nil {
+			return model.DeviceCommand{}, err
+		}
+		issued, _, issueErr := c.gates.Request(ctx, cycle, direction, true, requestKey)
+		return issued, issueErr
 	})
-	return command, err
+	if err != nil {
+		return model.DeviceCommand{}, false, err
+	}
+	command, ok := c.gates.Commands().Get(reservation.CommandID)
+	if !ok {
+		return model.DeviceCommand{}, false, fmt.Errorf("command %s missing for reservation", reservation.CommandID)
+	}
+	return command, replayed, nil
 }
 
 func (c *Coordinator) RequestClose(ctx context.Context, cycle model.TransitCycle, direction model.Direction) (model.DeviceCommand, error) {
 	if err := c.policy.ValidateClose(c.Snapshot(cycle.ChamberID), direction); err != nil {
 		return model.DeviceCommand{}, err
 	}
-	return c.gates.Request(ctx, cycle, direction, false)
+	command, _, err := c.gates.Request(ctx, cycle, direction, false, "")
+	return command, err
 }
 
-func (c *Coordinator) Release(chamberID, owner string) error {
-	if !c.arbiter.Release(chamberID, owner) {
-		return fmt.Errorf("reservation owner %q does not control chamber %s", owner, chamberID)
+// Release verifies the caller owns the reservation, withdraws it atomically
+// and cancels the command generated for it so no in-flight operation outlives
+// its reservation.
+func (c *Coordinator) Release(ctx context.Context, chamberID, owner string, now time.Time) (Reservation, model.DeviceCommand, error) {
+	reservation, err := c.arbiter.Release(chamberID, owner)
+	if err != nil {
+		return Reservation{}, model.DeviceCommand{}, err
 	}
-	return nil
+	command, err := c.gates.Commands().Cancel(reservation.CommandID, now)
+	if err != nil {
+		return Reservation{}, model.DeviceCommand{}, err
+	}
+	return reservation, command, nil
 }
 
 func (c *Coordinator) Reservation(chamberID string) (Reservation, bool) {

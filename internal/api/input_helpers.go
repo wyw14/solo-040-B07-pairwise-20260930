@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -10,6 +11,23 @@ import (
 )
 
 func chiURLParam(r *http.Request, name string) string { return chi.URLParam(r, name) }
+
+// operatorID identifies the duty operator across requests so that reservation
+// ownership survives a request/response cycle. Callers send X-Operator-ID; an
+// anonymous fallback scoped to the request keeps unauthenticated probes working
+// but can never release a reservation opened by a named operator.
+func operatorID(r *http.Request) string {
+	if operator := strings.TrimSpace(r.Header.Get("X-Operator-ID")); operator != "" {
+		return operator
+	}
+	return "http:" + requestID(r.Context())
+}
+
+// idempotencyKey lets a client (operator console) tag a logical request so a
+// retry after a lost response resolves to the original command.
+func idempotencyKey(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+}
 
 func parseUUID(value string) (uuid.UUID, error) {
 	if value == "" {
