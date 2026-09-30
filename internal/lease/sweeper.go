@@ -41,9 +41,11 @@ func (s *Sweeper) Expired() []ExpiredLease {
 }
 
 func (s *Sweeper) Reassign(vesselID uuid.UUID, previousOwner, newOwner string, ttl time.Duration) (model.Lease, error) {
+	now := s.now()
 	current, ok := s.registry.Get(vesselID)
-	if ok && current.Owner == previousOwner && current.Active(s.now()) {
+	if ok && current.Owner == previousOwner && current.Active(now) {
 		return model.Lease{}, ErrLeaseStillActive
 	}
-	return s.registry.Assign(vesselID, newOwner, ttl, s.now())
+	lease, _, err := s.registry.Assign(vesselID, newOwner, ttl, now)
+	return lease, err
 }

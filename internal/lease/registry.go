@@ -17,6 +17,9 @@ type Registry struct {
 	nextToken map[uuid.UUID]uint64
 }
 
+// ErrLeaseInUse is returned when an active lease is held by another owner.
+var ErrLeaseInUse = errors.New("vessel lease is held by another owner and still active")
+
 func NewRegistry() *Registry {
 	return &Registry{
 		leases:    make(map[uuid.UUID]model.Lease),
@@ -24,19 +27,32 @@ func NewRegistry() *Registry {
 	}
 }
 
-func (r *Registry) Assign(vesselID uuid.UUID, owner string, ttl time.Duration, now time.Time) (model.Lease, error) {
+// Assign grants a lease for the vessel. A duplicate request from the same owner
+// while its lease is active returns that lease unchanged (same fencing token,
+// same expiry) so retries are recognizable. A request from another owner while
+// an active lease exists is rejected: assignments never overwrite an in-flight
+// owner. Only after release or expiry is a new token minted.
+// The boolean reports whether a new lease was created.
+func (r *Registry) Assign(vesselID uuid.UUID, owner string, ttl time.Duration, now time.Time) (model.Lease, bool, error) {
 	if vesselID == uuid.Nil || owner == "" || ttl <= 0 {
-		return model.Lease{}, errors.New("assignment requires vessel, owner and positive ttl")
+		return model.Lease{}, false, errors.New("assignment requires vessel, owner and positive ttl")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now = now.UTC()
+	if current, ok := r.leases[vesselID]; ok && current.Active(now) {
+		if current.Owner == owner {
+			return current, false, nil
+		}
+		return model.Lease{}, false, ErrLeaseInUse
+	}
 	r.nextToken[vesselID]++
 	lease := model.Lease{
 		VesselID: vesselID, Owner: owner, FencingToken: r.nextToken[vesselID],
-		ExpiresAt: now.UTC().Add(ttl),
+		ExpiresAt: now.Add(ttl),
 	}
 	r.leases[vesselID] = lease
-	return lease, nil
+	return lease, true, nil
 }
 
 func (r *Registry) Renew(vesselID uuid.UUID, owner string, token uint64, ttl time.Duration, now time.Time) (model.Lease, error) {

@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -18,12 +19,20 @@ func closeGateHandler(runtime *Runtime) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, errors.New("invalid gate direction"))
 			return
 		}
+		input, err := decodeGateRequest(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if input.ClientToken == "" {
+			input.ClientToken = "http:" + requestID(r.Context())
+		}
 		cycleValue, ok := runtime.CycleService.Current(chamberID)
 		if !ok {
 			writeError(w, http.StatusConflict, errors.New("active transit not found"))
 			return
 		}
-		command, err := runtime.Interlocks.RequestClose(r.Context(), cycleValue, direction)
+		command, err := runtime.Interlocks.RequestClose(r.Context(), cycleValue, direction, input.ClientToken)
 		if err != nil {
 			writeError(w, http.StatusConflict, err)
 			return
@@ -61,15 +70,31 @@ func validPosition(position model.GatePosition) bool {
 		position == model.GateClosed || position == model.GateClosing
 }
 
+type releaseReservationInput struct {
+	Owner       string `json:"owner"`
+	ClientToken string `json:"client_token"`
+}
+
 func releaseReservationHandler(runtime *Runtime) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chamberID := chi.URLParam(r, "chamberID")
+		var input releaseReservationInput
+		if r.Body != nil {
+			if err := decodeJSON(r, &input); err != nil && !errors.Is(err, io.EOF) {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+		}
+		if input.Owner == "" {
+			writeError(w, http.StatusBadRequest, errors.New("owner is required"))
+			return
+		}
 		reservation, ok := runtime.Interlocks.Reservation(chamberID)
 		if !ok {
 			writeError(w, http.StatusNotFound, errors.New("active reservation not found"))
 			return
 		}
-		if err := runtime.Interlocks.Release(chamberID, reservation.Owner); err != nil {
+		if err := runtime.Interlocks.Release(chamberID, input.Owner, input.ClientToken); err != nil {
 			writeError(w, http.StatusConflict, err)
 			return
 		}

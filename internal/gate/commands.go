@@ -15,6 +15,7 @@ type Commands struct {
 	mu        sync.RWMutex
 	byID      map[uuid.UUID]model.DeviceCommand
 	byChamber map[string][]uuid.UUID
+	byRequest map[string]uuid.UUID
 	nextEpoch map[string]uint64
 }
 
@@ -22,6 +23,7 @@ func NewCommands() *Commands {
 	return &Commands{
 		byID:      make(map[uuid.UUID]model.DeviceCommand),
 		byChamber: make(map[string][]uuid.UUID),
+		byRequest: make(map[string]uuid.UUID),
 		nextEpoch: make(map[string]uint64),
 	}
 }
@@ -30,17 +32,39 @@ func epochKey(chamberID string, device model.DeviceKind) string {
 	return chamberID + ":" + string(device)
 }
 
-func (c *Commands) Issue(cycle model.TransitCycle, device model.DeviceKind, action string, target float64, now time.Time) (model.DeviceCommand, error) {
+func requestKey(chamberID string, device model.DeviceKind, requestID string) string {
+	return epochKey(chamberID, device) + ":" + requestID
+}
+
+// Issue generates a command for the request. When requestID is non-empty and a
+// command was already issued for the same chamber/device/request, that original
+// command is returned unchanged: retries never consume a new epoch or produce a
+// new identity.
+func (c *Commands) Issue(cycle model.TransitCycle, device model.DeviceKind, action string, target float64, requestID string, now time.Time) (model.DeviceCommand, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if requestID != "" {
+		if existingID, ok := c.byRequest[requestKey(cycle.ChamberID, device, requestID)]; ok {
+			existing := c.byID[existingID]
+			if existing.CycleID != cycle.ID || existing.Generation != cycle.Generation ||
+				existing.Action != action {
+				return model.DeviceCommand{}, errors.New("request id is already bound to a different command")
+			}
+			return existing, nil
+		}
+	}
 	key := epochKey(cycle.ChamberID, device)
 	c.nextEpoch[key]++
-	command, err := model.NewDeviceCommand(cycle, c.nextEpoch[key], device, action, target, now)
+	command, err := model.NewDeviceCommand(cycle, c.nextEpoch[key], device, action, target, requestID, now)
 	if err != nil {
+		c.nextEpoch[key]--
 		return model.DeviceCommand{}, err
 	}
 	c.byID[command.ID] = command
 	c.byChamber[cycle.ChamberID] = append(c.byChamber[cycle.ChamberID], command.ID)
+	if requestID != "" {
+		c.byRequest[requestKey(cycle.ChamberID, device, requestID)] = command.ID
+	}
 	return command, nil
 }
 

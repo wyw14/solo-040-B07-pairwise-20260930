@@ -29,9 +29,13 @@ func NewService(registry *Registry, admissionController *admission.Controller, r
 }
 
 func (s *Service) Assign(ctx context.Context, chamberID string, vesselID uuid.UUID, owner string, ttl time.Duration) (model.Lease, error) {
-	lease, err := s.registry.Assign(vesselID, owner, ttl, s.now())
+	lease, created, err := s.registry.Assign(vesselID, owner, ttl, s.now())
 	if err != nil {
 		return model.Lease{}, err
+	}
+	if !created {
+		// Idempotent replay of the original request: do not journal a new event.
+		return lease, nil
 	}
 	_, err = s.recorder.Record(ctx, chamberID, model.EventLeaseChanged, uuid.Nil, 0, lease)
 	return lease, err

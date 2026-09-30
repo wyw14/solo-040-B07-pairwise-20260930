@@ -2,12 +2,36 @@ package api
 
 import (
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/wyw14/cry-96/internal/model"
 )
+
+// gateRequestInput identifies the operator and the client request. Owner is
+// the duty officer identity used for reservation ownership; ClientToken is the
+// caller-chosen idempotency key so a legitimate retry is recognized instead of
+// issuing a second command.
+type gateRequestInput struct {
+	Owner       string `json:"owner"`
+	ClientToken string `json:"client_token"`
+}
+
+func decodeGateRequest(r *http.Request) (gateRequestInput, error) {
+	var input gateRequestInput
+	if r.Body == nil {
+		return input, nil
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		if errors.Is(err, io.EOF) {
+			return gateRequestInput{}, nil
+		}
+		return gateRequestInput{}, err
+	}
+	return input, nil
+}
 
 func openGateHandler(runtime *Runtime) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -17,7 +41,19 @@ func openGateHandler(runtime *Runtime) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, errors.New("invalid gate direction"))
 			return
 		}
-		command, err := runtime.Interlocks.RequestOpen(r.Context(), mustCurrent(runtime, chamberID), direction, "http:"+requestID(r.Context()))
+		input, err := decodeGateRequest(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if input.Owner == "" {
+			writeError(w, http.StatusBadRequest, errors.New("owner is required"))
+			return
+		}
+		if input.ClientToken == "" {
+			input.ClientToken = "http:" + requestID(r.Context())
+		}
+		command, err := runtime.Interlocks.RequestOpen(r.Context(), mustCurrent(runtime, chamberID), direction, input.Owner, input.ClientToken)
 		if err != nil {
 			writeError(w, http.StatusConflict, err)
 			return

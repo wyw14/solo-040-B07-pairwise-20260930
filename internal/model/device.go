@@ -34,6 +34,7 @@ func (s CommandState) Terminal() bool {
 
 type DeviceCommand struct {
 	ID         uuid.UUID    `json:"id"`
+	RequestID  string       `json:"request_id,omitempty"`
 	CycleID    uuid.UUID    `json:"cycle_id"`
 	ChamberID  string       `json:"chamber_id"`
 	Generation uint64       `json:"generation"`
@@ -46,7 +47,7 @@ type DeviceCommand struct {
 	UpdatedAt  time.Time    `json:"updated_at"`
 }
 
-func NewDeviceCommand(cycle TransitCycle, epoch uint64, device DeviceKind, action string, target float64, now time.Time) (DeviceCommand, error) {
+func NewDeviceCommand(cycle TransitCycle, epoch uint64, device DeviceKind, action string, target float64, requestID string, now time.Time) (DeviceCommand, error) {
 	if cycle.ID == uuid.Nil || cycle.ChamberID == "" {
 		return DeviceCommand{}, errors.New("command requires a transit cycle")
 	}
@@ -57,7 +58,7 @@ func NewDeviceCommand(cycle TransitCycle, epoch uint64, device DeviceKind, actio
 		return DeviceCommand{}, errors.New("device and action are required")
 	}
 	return DeviceCommand{
-		ID: uuid.New(), CycleID: cycle.ID, ChamberID: cycle.ChamberID,
+		ID: uuid.New(), RequestID: requestID, CycleID: cycle.ID, ChamberID: cycle.ChamberID,
 		Generation: cycle.Generation, Epoch: epoch, Device: device,
 		Action: action, Target: target, State: CommandQueued,
 		CreatedAt: now.UTC(), UpdatedAt: now.UTC(),

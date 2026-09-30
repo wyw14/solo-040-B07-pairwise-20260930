@@ -24,7 +24,7 @@ func NewController(state *State, commands *Commands, recorder *journal.Recorder,
 	return &Controller{state: state, commands: commands, recorder: recorder, now: now}
 }
 
-func (c *Controller) Request(ctx context.Context, cycle model.TransitCycle, direction model.Direction, open bool) (model.DeviceCommand, error) {
+func (c *Controller) Request(ctx context.Context, cycle model.TransitCycle, direction model.Direction, open bool, requestID string) (model.DeviceCommand, error) {
 	if err := ctx.Err(); err != nil {
 		return model.DeviceCommand{}, err
 	}
@@ -38,7 +38,7 @@ func (c *Controller) Request(ctx context.Context, cycle model.TransitCycle, dire
 		action = "open"
 		position = model.GateOpening
 	}
-	command, err := c.commands.Issue(cycle, device, action, 0, c.now())
+	command, err := c.commands.Issue(cycle, device, action, 0, requestID, c.now())
 	if err != nil {
 		return model.DeviceCommand{}, err
 	}
